@@ -1,5 +1,4 @@
-import type { PortInfo, CameraInfo, StartResponse, RecordingConfig, InferenceConfig, WizardState } from "./wizard-types";
-import { validateBimanualCalibrationNames } from "./wizard-types";
+import type { PortInfo, CameraInfo, StartResponse, RecordingConfig, WizardState } from "./wizard-types";
 
 const USE_MOCK = false;
 
@@ -29,18 +28,25 @@ async function fetchAPI<T>(path: string, options?: RequestInit): Promise<T> {
     );
   }
   if (!res.ok) {
-    const body = await res.json().catch(() => null);
+    const raw = await res.text();
+    const body = (() => {
+      try {
+        return raw ? JSON.parse(raw) : null;
+      } catch {
+        return null;
+      }
+    })();
     const detail = body?.detail;
-    if (detail && typeof detail === "object") {
-      throw new DevError(
-        detail.message || `API error: ${res.status}`,
-        detail.traceback,
-        detail.hint,
-      );
+    if (detail && typeof detail === "object" && detail !== null) {
+      const msg = detail.message || `API error: ${res.status}`;
+      throw new DevError(msg, detail.traceback, detail.hint);
     }
-    throw new Error(
-      (typeof detail === "string" ? detail : null) ?? `API error: ${res.status}`
-    );
+    if (typeof detail === "string") {
+      throw new Error(detail);
+    }
+    // 非 JSON 或缺少 detail 时，尽量展示后端返回内容（便于排查 500）
+    const fallback = raw.slice(0, 400).trim() || `API error: ${res.status}`;
+    throw new Error(fallback);
   }
   return res.json();
 }
@@ -116,6 +122,63 @@ export const services = {
     return fetchAPI(`/api/teleoperation/status/${processId}`);
   },
 
+  /** 检测底盘接口是否可用（GET，用于判断后端端口/路由） */
+  checkBaseControlReady: async (): Promise<boolean> => {
+    if (USE_MOCK) return true;
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || ""}/api/teleoperation/base/ready`);
+      if (!res.ok) return false;
+      const data = await res.json().catch(() => ({}));
+      return data?.ready === true;
+    } catch {
+      return false;
+    }
+  },
+
+  /** LeKiwi chassis control: start base controller subprocess (XLerobot-based) */
+  startBaseControl: async (params: {
+    port: string;
+    wheel_radius: number;
+    base_radius: number;
+    wheel_angles: string;
+  }): Promise<StartResponse> => {
+    if (USE_MOCK) {
+      const mock = await import("./mock-data");
+      return mock.startResponse("teleoperation");
+    }
+    return fetchAPI<StartResponse>("/api/teleoperation/base/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+  },
+
+  /** LeKiwi chassis: send velocity command (forward/backward/left/right/rotate_left/rotate_right/speed_index) */
+  setBaseVelocity: async (params: {
+    forward: boolean;
+    backward: boolean;
+    left: boolean;
+    right: boolean;
+    rotate_left: boolean;
+    rotate_right: boolean;
+    speed_index: number;
+  }): Promise<void> => {
+    if (USE_MOCK) return;
+    await fetchAPI("/api/teleoperation/base/velocity", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(params),
+    });
+  },
+
+  /** LeKiwi chassis: stop base controller process */
+  stopBaseControl: async (processId: string): Promise<void> => {
+    if (USE_MOCK) return;
+    await fetchAPI(`/api/teleoperation/base/stop/${processId}`, {
+      method: "POST",
+    });
+  },
+
   startRecording: async (config: RecordingConfig): Promise<StartResponse> => {
     if (USE_MOCK) {
       const mock = await import("./mock-data");
@@ -185,11 +248,6 @@ export const services = {
     const calId = (file: string | null | undefined) =>
       file && file !== "new" ? file.replace(/\.json$/, "") : null;
 
-    // For bimanual mode, derive the base IDs from the calibration file names
-    const bimanualValidation = mode === "bimanual"
-      ? validateBimanualCalibrationNames(state.calibrationSelections, state.newCalibrationNames)
-      : null;
-
     const config =
       mode === "bimanual"
         ? {
@@ -199,8 +257,10 @@ export const services = {
               left_leader_port: state.portAssignments.left_leader || null,
               right_follower_port: state.portAssignments.right_follower || null,
               right_leader_port: state.portAssignments.right_leader || null,
-              follower_id: bimanualValidation?.followerBaseId || "bimanual_follower",
-              leader_id: bimanualValidation?.leaderBaseId || "bimanual_leader",
+              left_follower_id: calId(state.calibrationSelections.left_follower),
+              left_leader_id: calId(state.calibrationSelections.left_leader),
+              right_follower_id: calId(state.calibrationSelections.right_follower),
+              right_leader_id: calId(state.calibrationSelections.right_leader),
               cameras,
             },
           }
@@ -233,6 +293,16 @@ export const services = {
     });
   },
 
+  /** 运行 sudo chmod 777 /dev/ttyACM*，需在弹窗内输入用户密码 */
+  chmodSerial: async (password: string): Promise<{ message: string }> => {
+    if (USE_MOCK) return { message: "chmod 777 applied (mock)." };
+    return fetchAPI<{ message: string }>("/api/setup/chmod-serial", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
+  },
+
   stopCameraStreams: async (): Promise<void> => {
     if (USE_MOCK) return;
     await fetchAPI("/api/setup/cameras/streams/stop", { method: "POST" });
@@ -248,41 +318,5 @@ export const services = {
   openDataFolder: async (): Promise<void> => {
     if (USE_MOCK) return;
     await fetchAPI("/api/recording/open-folder", { method: "POST" });
-  },
-
-  startInference: async (config: InferenceConfig): Promise<StartResponse> => {
-    if (USE_MOCK) {
-      const mock = await import("./mock-data");
-      return mock.startResponse("inference");
-    }
-    return fetchAPI<StartResponse>("/api/inference/start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        policy_path: config.policyPath,
-        repo_id: config.repoId,
-        single_task: config.task,
-        num_episodes: config.numEpisodes,
-        episode_time_s: config.episodeTimeS,
-        display_data: config.displayData,
-      }),
-    });
-  },
-
-  stopInference: async (processId: string): Promise<void> => {
-    if (USE_MOCK) return;
-    await fetchAPI(`/api/inference/stop/${processId}`, { method: "POST" });
-  },
-
-  getInferenceStatus: async (
-    processId: string
-  ): Promise<{
-    process_id: string;
-    process_type: string;
-    state: "running" | "stopped" | "error";
-    uptime_seconds: number | null;
-    error_message: string | null;
-  }> => {
-    return fetchAPI(`/api/inference/status/${processId}`);
   },
 };

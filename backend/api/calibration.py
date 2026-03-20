@@ -72,15 +72,10 @@ async def get_calibration_status():
         statuses = []
 
         if config.mode == "bimanual":
-            # Bimanual sub-arm IDs are derived as {base}_left / {base}_right.
-            bi = config.bimanual
-            follower_base = bi.follower_id or "bimanual_follower"
-            leader_base = bi.leader_id or "bimanual_leader"
+            # Check bimanual devices
             devices = [
-                ("robot", f"{follower_base}_left", "so101_follower", bi.left_follower_port),
-                ("robot", f"{follower_base}_right", "so101_follower", bi.right_follower_port),
-                ("teleoperator", f"{leader_base}_left", "so101_leader", bi.left_leader_port),
-                ("teleoperator", f"{leader_base}_right", "so101_leader", bi.right_leader_port),
+                ("robot", "bimanual_follower", "bi_so101_follower", None),
+                ("teleoperator", "bimanual_leader", "bi_so101_leader", None),
             ]
         else:
             # Check single arm devices

@@ -7,10 +7,7 @@ import {
   Check,
   CircleDot,
   Circle,
-  Info,
-  AlertTriangle,
 } from "lucide-react";
-import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -21,7 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getCalibrationPaths, validateBimanualCalibrationNames } from "@/lib/wizard-types";
+import { getCalibrationPaths } from "@/lib/wizard-types";
 import { services } from "@/lib/services";
 import {
   useManualCalibration,
@@ -38,13 +35,6 @@ const ROLE_LABELS: Record<string, string> = {
   right_follower: "Right Follower",
   left_leader: "Left Leader",
   right_leader: "Right Leader",
-};
-
-const BIMANUAL_PLACEHOLDERS: Record<string, string> = {
-  left_follower: "e.g., bimanual_follower_left",
-  right_follower: "e.g., bimanual_follower_right",
-  left_leader: "e.g., bimanual_leader_left",
-  right_leader: "e.g., bimanual_leader_right",
 };
 
 // ─── Encoder table component ────────────────────────────────────────────────
@@ -206,7 +196,7 @@ function NewCalibrationPanel({
         <Label htmlFor={`cal-name-${role}`}>Calibration File Name</Label>
         <Input
           id={`cal-name-${role}`}
-          placeholder={BIMANUAL_PLACEHOLDERS[role] || "e.g., my_follower"}
+          placeholder="e.g., left_follower"
           value={wizState.newCalibrationNames[role] || ""}
           onChange={(e) =>
             dispatch({
@@ -218,9 +208,8 @@ function NewCalibrationPanel({
           disabled={!isIdle}
         />
         <p className="text-xs text-muted-foreground">
-          {BIMANUAL_PLACEHOLDERS[role]
-            ? `Must end with ${role.startsWith("left") ? '"_left"' : '"_right"'} and share the same prefix as its pair.`
-            : "This name will be used as the robot/teleoperator ID."}
+          This name will be used as the robot/teleoperator ID for teleoperation
+          and recording.
         </p>
       </div>
 
@@ -364,7 +353,6 @@ export function CalibrationStep() {
   const [loading, setLoading] = useState(false);
 
   const calPaths = state.robotMode ? getCalibrationPaths(state.robotMode) : [];
-  const isBimanual = state.robotMode === "bimanual";
 
   const allSelected = calPaths.every((p) => {
     const sel = state.calibrationSelections[p.role];
@@ -373,11 +361,6 @@ export function CalibrationStep() {
       return (state.newCalibrationNames[p.role] || "").trim() !== "";
     return true;
   });
-
-  const validation = isBimanual
-    ? validateBimanualCalibrationNames(state.calibrationSelections, state.newCalibrationNames)
-    : null;
-  const canProceed = allSelected && (validation ? validation.valid : true);
 
   // Load calibration files for each role on mount
   useEffect(() => {
@@ -410,22 +393,9 @@ export function CalibrationStep() {
     <StepCard
       title="Calibration"
       description="Choose an existing calibration file or start a new calibration for each arm."
-      nextDisabled={!canProceed}
+      nextDisabled={!allSelected}
     >
       <div className="space-y-5">
-        {/* Bimanual naming info */}
-        {isBimanual && (
-          <Alert>
-            <Info className="h-4 w-4" />
-            <AlertDescription>
-              Left and right arms of the same type must share the same base ID.
-              For example, if the left follower is{" "}
-              <code className="text-xs">my_robot_left</code>, the right follower must be{" "}
-              <code className="text-xs">my_robot_right</code>.
-            </AlertDescription>
-          </Alert>
-        )}
-
         {loading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -483,20 +453,6 @@ export function CalibrationStep() {
               </div>
             );
           })
-        )}
-
-        {/* Validation errors for bimanual naming */}
-        {isBimanual && allSelected && validation && !validation.valid && validation.errors.length > 0 && (
-          <Alert variant="destructive">
-            <AlertTriangle className="h-4 w-4" />
-            <AlertDescription>
-              <ul className="list-disc pl-4 space-y-1">
-                {validation.errors.map((err) => (
-                  <li key={err} className="text-xs">{err}</li>
-                ))}
-              </ul>
-            </AlertDescription>
-          </Alert>
         )}
       </div>
     </StepCard>

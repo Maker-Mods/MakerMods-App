@@ -18,7 +18,7 @@ class ConfigManager:
         """
         if config_path is None:
             # Default to repo root
-            repo_root = Path(__file__).parent.parent.parent
+            repo_root = Path(__file__).parent.parent.parent.parent.parent.parent
             config_path = repo_root / "webui_config.json"
 
         self.config_path = config_path

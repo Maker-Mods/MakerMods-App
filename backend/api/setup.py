@@ -1,13 +1,15 @@
 """Setup API endpoints for ports and cameras."""
 
 import asyncio
+import glob
 import logging
-import multiprocessing as mp
+import os
 import threading
 import time
 import traceback as tb
 from typing import Dict, List, Optional
 
+import cv2
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -27,6 +29,12 @@ class WiggleRequest(BaseModel):
     """Request to wiggle a gripper on a specific port."""
 
     port: str
+
+
+class ChmodSerialRequest(BaseModel):
+    """Request to run sudo chmod 777 on /dev/ttyACM* (user enters password in UI)."""
+
+    password: str = ""
 
 
 def _get_error_hint(e: Exception) -> Optional[str]:
@@ -145,96 +153,133 @@ async def wiggle_gripper(request: WiggleRequest):
         )
 
 
+async def _run_chmod(devices: list, password: str) -> str:
+    """对设备列表执行 chmod 666（phosphobot 风格）。返回成功信息或抛出 HTTPException。
+    策略：1) root 直接 chmod；2) sudo -n（NOPASSWD）；3) sudo -S（需密码）。"""
+    MODE = "666"
+
+    async def _chmod_direct(d: str) -> tuple[int, str]:
+        p = await asyncio.create_subprocess_exec(
+            "chmod", MODE, d,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await p.communicate()
+        return p.returncode, (err or out or b"").decode("utf-8", errors="replace").strip()
+
+    async def _sudo(no_password: bool, pwd: str) -> tuple[int, str]:
+        flags = ["-n"] if no_password else ["-S"]
+        p = await asyncio.create_subprocess_exec(
+            "sudo", *flags, "chmod", MODE, *devices,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdin_data = b"" if no_password else (pwd.encode("utf-8") + b"\n")
+        out, err = await p.communicate(input=stdin_data)
+        combined = (err or out or b"").decode("utf-8", errors="replace").strip()
+        return p.returncode, combined
+
+    # geteuid 在 Windows 上不存在，用 getattr 兼容
+    if getattr(os, "geteuid", lambda: -1)() == 0:
+        # 已是 root，直接 chmod（phosphobot 同款，无需 sudo）
+        for d in devices:
+            rc, err = await _chmod_direct(d)
+            if rc != 0:
+                raise HTTPException(status_code=500, detail={"message": err or f"chmod {MODE} failed."})
+        return f"chmod {MODE} applied to: {', '.join(devices)}"
+
+    # 1. 先试 sudo -n（NOPASSWD 时直接成功，无需输入密码）
+    rc, err = await _sudo(no_password=True, pwd="")
+    if rc == 0:
+        return f"chmod {MODE} applied to: {', '.join(devices)} (no password needed)"
+
+    # 2. 有密码时试 sudo -S
+    if password:
+        rc, err = await _sudo(no_password=False, pwd=password)
+        if rc == 0:
+            return f"chmod {MODE} applied to: {', '.join(devices)}"
+        if "password" in err.lower() or "sorry" in err.lower():
+            raise HTTPException(status_code=403, detail={"message": "Wrong password or sudo not allowed."})
+        if "no tty" in err.lower() or "askpass" in err.lower():
+            raise HTTPException(
+                status_code=500,
+                detail={"message": f"sudo requires a TTY. Run in a terminal: sudo chmod {MODE} /dev/ttyACM*"},
+            )
+        raise HTTPException(status_code=500, detail={"message": err or f"chmod {MODE} failed."})
+
+    # 3. 没有密码且 sudo -n 也失败 → 提示手动执行
+    hint = "\n".join([f"  sudo chmod {MODE} {d}" for d in devices])
+    raise HTTPException(
+        status_code=403,
+        detail={"message": f"sudo requires a password. Enter your password above, or run in a terminal:\n{hint}"},
+    )
+
+
+@router.post("/chmod-serial")
+async def chmod_serial(request: ChmodSerialRequest):
+    """Run sudo chmod 666 /dev/ttyACM* (phosphobot style) so the port can be accessed."""
+    try:
+        devices = sorted(glob.glob("/dev/ttyACM*"))
+        if not devices:
+            raise HTTPException(
+                status_code=400,
+                detail={"message": "No /dev/ttyACM* devices found. Plug in the base and try again."},
+            )
+        msg = await _run_chmod(devices, (request.password or "").strip())
+        return {"message": msg}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("chmod-serial failed")
+        raise HTTPException(
+            status_code=500,
+            detail={"message": str(e), "traceback": tb.format_exc()},
+        )
+
+
 # ---------------------------------------------------------------------------
 # MJPEG camera streaming
 # ---------------------------------------------------------------------------
 
-
-def _camera_worker(index: int, queue: mp.Queue, stop_event: mp.Event) -> None:
-    """Capture frames in a separate process to avoid macOS AVFoundation cache."""
-    import cv2
-    import time
-
-    cap = cv2.VideoCapture(index)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    while not stop_event.is_set():
-        ret, frame = cap.read()
-        if ret:
-            _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-            data = jpeg.tobytes()
-            # Keep only the latest frame
-            while not queue.empty():
-                try:
-                    queue.get_nowait()
-                except Exception:
-                    break
-            try:
-                queue.put_nowait(data)
-            except Exception:
-                pass
-        time.sleep(1 / 15)
-    cap.release()
-
-
 class _CameraStream:
-    """Manages a camera capture subprocess shared across MJPEG clients."""
+    """Manages a single OpenCV camera capture shared across MJPEG clients."""
 
     def __init__(self, index: int):
         self.index = index
+        self._cap: cv2.VideoCapture | None = None
         self._lock = threading.Lock()
         self._clients = 0
         self._frame: bytes | None = None
         self._running = False
-        self._process: mp.Process | None = None
-        self._queue: mp.Queue | None = None
-        self._stop_event: mp.Event | None = None
-        self._reader_thread: threading.Thread | None = None
+        self._thread: threading.Thread | None = None
 
-    def _reader_loop(self) -> None:
-        """Pull frames from the subprocess queue into self._frame."""
+    def _capture_loop(self) -> None:
+        cap = cv2.VideoCapture(self.index)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self._cap = cap
         while self._running:
-            try:
-                frame = self._queue.get(timeout=0.1)
-                self._frame = frame
-            except Exception:
-                pass
+            ret, frame = cap.read()
+            if ret:
+                _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                self._frame = jpeg.tobytes()
+            time.sleep(1 / 15)  # ~15 fps
+        cap.release()
+        self._cap = None
 
     def add_client(self) -> None:
         with self._lock:
             self._clients += 1
             if not self._running:
                 self._running = True
-                self._frame = None
-                self._stop_event = mp.Event()
-                self._queue = mp.Queue()
-                self._process = mp.Process(
-                    target=_camera_worker,
-                    args=(self.index, self._queue, self._stop_event),
-                    daemon=True,
-                )
-                self._process.start()
-                self._reader_thread = threading.Thread(
-                    target=self._reader_loop, daemon=True
-                )
-                self._reader_thread.start()
+                self._thread = threading.Thread(target=self._capture_loop, daemon=True)
+                self._thread.start()
 
     def remove_client(self) -> None:
         with self._lock:
             self._clients = max(0, self._clients - 1)
             if self._clients == 0:
-                self._stop()
-
-    def _stop(self) -> None:
-        self._running = False
-        if self._stop_event is not None:
-            self._stop_event.set()
-        if self._process is not None:
-            self._process.join(timeout=3)
-            if self._process.is_alive():
-                self._process.kill()
-            self._process = None
-        self._frame = None
+                self._running = False
 
     @property
     def frame(self) -> bytes | None:
@@ -253,11 +298,17 @@ def _get_camera_stream(index: int) -> _CameraStream:
 
 
 def _stop_all_streams() -> None:
-    """Stop all active MJPEG streams and wait for subprocesses to release cameras."""
+    """Stop all active MJPEG streams and wait for capture threads to release cameras."""
+    threads: list[threading.Thread] = []
     with _streams_lock:
         for stream in _camera_streams.values():
-            stream._stop()
+            stream._running = False
+            if stream._thread is not None:
+                threads.append(stream._thread)
         _camera_streams.clear()
+    # Wait for capture threads to fully exit and release cameras
+    for t in threads:
+        t.join(timeout=3)
 
 
 @router.post("/cameras/streams/stop")

@@ -1,31 +1,36 @@
-"""Port scanning service wrapping lerobot_find_port logic."""
+"""Port scanning service for serial ports (机械臂/底盘)."""
 
 from pathlib import Path
 from typing import List
 
 from backend.models.setup import PortInfo
 
-# Feetech motor controllers on macOS show up as /dev/cu.usbmodem*
-FEETECH_PORT_PREFIX = "/dev/cu.usbmodem"
+# macOS: Feetech 等 USB 串口多为 /dev/cu.usbmodem*
+# Linux: 多为 /dev/ttyACM*（CDC ACM）、/dev/ttyUSB*（USB 转串口），底盘 LeKiwi 常用 ttyACM*
+DEV_GLOBS = ["cu.usbmodem*", "ttyACM*", "ttyUSB*"]
 
 
 class PortScannerService:
     """Service for scanning and detecting serial ports."""
 
     def list_ports(self) -> List[PortInfo]:
-        """List available Feetech motor controller ports.
+        """列出可用串口（含 macOS cu.usbmodem* 与 Linux ttyACM* / ttyUSB*）。
 
-        Only returns ports matching /dev/cu.usbmodem* which are Feetech motor controllers.
-
-        Returns:
-            List of PortInfo objects.
+        机械臂与 LeKiwi 底盘在 Linux 上通常为 /dev/ttyACM*。
         """
-        ports = [str(p) for p in Path("/dev").glob("cu.usbmodem*")]
-
+        seen: set[str] = set()
+        ports: List[str] = []
+        dev = Path("/dev")
+        for pattern in DEV_GLOBS:
+            for p in dev.glob(pattern):
+                path = str(p.resolve())
+                if path not in seen:
+                    seen.add(path)
+                    ports.append(path)
         return [
             PortInfo(
                 port=port,
-                description="Feetech Motor Controller",
+                description="Serial (arm/chassis)",
                 hwid=None,
             )
             for port in sorted(ports)

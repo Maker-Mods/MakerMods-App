@@ -3,12 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "dev:linux": "node node_modules/next/dist/bin/next dev --webpack",
+    "dev": "next dev --webpack",
     "build": "next build",
-    "build:linux": "node node_modules/next/dist/bin/next build",
     "start": "next start",
-    "start:linux": "node node_modules/next/dist/bin/next start",
     "lint": "eslint"
   },
   "dependencies": {

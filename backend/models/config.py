@@ -32,10 +32,10 @@ class BimanualConfig(BaseModel):
     left_leader_port: Optional[str] = Field(None, description="Left leader teleoperator port")
     right_follower_port: Optional[str] = Field(None, description="Right follower robot port")
     right_leader_port: Optional[str] = Field(None, description="Right leader teleoperator port")
-    # Base IDs passed to lerobot via --robot.id / --teleop.id.
-    # Lerobot derives per-arm IDs as {base}_left and {base}_right.
-    follower_id: Optional[str] = Field(None, description="Base follower ID (sub-arms: {id}_left, {id}_right)")
-    leader_id: Optional[str] = Field(None, description="Base leader ID (sub-arms: {id}_left, {id}_right)")
+    left_follower_id: Optional[str] = Field(None, description="Left follower calibration ID")
+    left_leader_id: Optional[str] = Field(None, description="Left leader calibration ID")
+    right_follower_id: Optional[str] = Field(None, description="Right follower calibration ID")
+    right_leader_id: Optional[str] = Field(None, description="Right leader calibration ID")
     cameras: List[CameraConfig] = Field(default_factory=list, description="Camera configurations")
 
 
