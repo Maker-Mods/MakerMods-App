@@ -360,23 +360,71 @@ function diagnoseFromLogs(logs: string[]): {
     };
   }
 
+  // FeetechMotorsBus handshake failure — bus opens fine but motors don't reply.
+  // Two flavors: empty `Found motor list: {}` = no power / wiring; non-empty
+  // = wrong/dirty IDs. Both come through the same RuntimeError class.
+  if (joined.includes("FeetechMotorsBus motor check failed")) {
+    const portMatch = joined.match(
+      /motor check failed on port ['"]?(\/dev\/[^\s'"`)]+)/
+    );
+    const port = portMatch?.[1];
+    const foundEmpty = /Full found motor list[^{]*{\s*}/.test(joined);
+    if (foundEmpty) {
+      return {
+        title: "No motors responding on this arm",
+        description: port
+          ? `The serial bus on "${port}" opened, but zero motors replied to the ping. The USB controller is powered (over USB), but the servos themselves are not.`
+          : "The serial bus opened, but zero motors replied to the ping.",
+        suggestion:
+          "Plug in or switch on this arm's external motor PSU (the barrel-jack power supply on the controller board — separate from USB). Confirm the small power LED on the controller is lit. Reseat the 3-pin TTL daisy chain from controller → motor 1 → … → motor 6.",
+      };
+    }
+    return {
+      title: "Wrong motor IDs on this arm",
+      description: port
+        ? `The bus on "${port}" returned motors, but their IDs don't match what SO-101 expects (1–6). This usually means motors were never re-IDed from the factory default, or two arms were partially set up on one bus.`
+        : "Motors responded but with wrong IDs (SO-101 expects 1–6).",
+      suggestion:
+        "Run `lerobot-setup-motors --robot.type=so101_follower --robot.port=<this_port>` (or `--teleop.type=so101_leader`) in a terminal to re-assign motor IDs 1–6 one at a time.",
+    };
+  }
+
+  // Order matters: check the more-specific "device gone" patterns BEFORE the
+  // generic "could not open port", because lerobot wraps the OS-level
+  // FileNotFoundError ([Errno 2]) into a ConnectionError whose message also
+  // contains "could not open port" — we'd otherwise show a misleading
+  // "Port access denied" alert when the real cause is a disconnected USB.
+  const looksLikeDeviceGone =
+    (joined.includes("FileNotFoundError") && joined.includes("/dev/")) ||
+    joined.includes("[Errno 2]") ||
+    joined.includes("No such file or directory") ||
+    /Could not connect on port ['"]?\/dev\//.test(joined);
+  if (looksLikeDeviceGone) {
+    // Prefer the port mentioned at the error site over the first /dev/...
+    // in the log, because the config dump prints all ports before the error
+    // and would otherwise mis-attribute the failure to a healthy port.
+    const portFromError =
+      joined.match(/Could not connect on port ['"]?(\/dev\/[^\s'"`)]+)/) ||
+      joined.match(/No such file or directory: ['"]?(\/dev\/[^\s'"`)]+)/) ||
+      joined.match(/could not open port (\/dev\/[^\s:'"`)]+)/);
+    const port = portFromError?.[1] ?? joined.match(/\/dev\/[^\s'"`)]+/)?.[0];
+    return {
+      title: "USB device disconnected",
+      description: port
+        ? `The serial port "${port}" no longer exists at the OS level. The Feetech controller has been unplugged, lost power, or its USB hub dropped.`
+        : "A configured serial port no longer exists. The Feetech controller has been unplugged or lost power.",
+      suggestion:
+        "Unplug all motor controllers, wait 5 seconds, plug them back in (preferably directly into the Mac, not through a bus-powered hub), then go back to the Ports step and re-scan.",
+    };
+  }
+
   if (joined.includes("Permission denied") || joined.includes("could not open port")) {
     return {
       title: "Port access denied",
       description:
-        "The system could not open the serial port. Another process may be using it, or the device was disconnected.",
+        "The system could not open the serial port. Another process is holding it (a previous lerobot run or a serial-monitor app).",
       suggestion:
-        "Check that all USB cables are connected, and that no other application is using the ports. You may need to unplug and re-plug the device.",
-    };
-  }
-
-  if (joined.includes("FileNotFoundError") && joined.includes("/dev/")) {
-    return {
-      title: "Device not found",
-      description:
-        "A configured serial port no longer exists. The device may have been disconnected.",
-      suggestion:
-        "Go back to the Ports step and re-scan for connected devices.",
+        "Close any other app using the port, or kill leftover lerobot-* processes. If unsure, restart the backend.",
     };
   }
 

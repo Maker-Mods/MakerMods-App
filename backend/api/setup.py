@@ -219,7 +219,9 @@ class _CameraStream:
 
     def __init__(self, index: int):
         self.index = index
-        self._lock = threading.Lock()
+        # RLock so _stop() can re-acquire when called from remove_client (which
+        # already holds the lock). Lock would deadlock on that path.
+        self._lock = threading.RLock()
         self._clients = 0
         self._frame: bytes | None = None
         self._running = False
@@ -263,18 +265,23 @@ class _CameraStream:
                 self._stop()
 
     def _stop(self) -> None:
-        self._running = False
-        if self._stop_event is not None:
-            self._stop_event.set()
-        if self._process is not None:
-            # Give the process a brief moment to exit cleanly, then kill it.
-            # Use a short timeout (0.5s) to avoid blocking threads/event loop.
-            self._process.join(timeout=0.5)
-            if self._process.is_alive():
-                self._process.kill()
-                self._process.join(timeout=1)
+        # Snapshot state under the lock and clear it, then perform slow joins
+        # outside the lock. Without this, two concurrent _stop() callers race
+        # between the `is not None` check and `.is_alive()`.
+        with self._lock:
+            self._running = False
+            stop_event = self._stop_event
+            process = self._process
+            self._stop_event = None
             self._process = None
-        self._frame = None
+            self._frame = None
+        if stop_event is not None:
+            stop_event.set()
+        if process is not None:
+            process.join(timeout=0.5)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=1)
 
     @property
     def frame(self) -> bytes | None:

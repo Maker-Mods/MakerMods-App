@@ -21,9 +21,38 @@ export function DevErrorPanel({ error }: DevErrorPanelProps) {
   const detailText = traceback || error.message;
 
   async function copyToClipboard() {
-    await navigator.clipboard.writeText(detailText);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    // Try the modern Clipboard API first; some browsers reject when the document
+    // isn't focused (e.g. during overlay transitions). Fall back to a temporary
+    // textarea + execCommand so the user always gets a copy. Never throw — an
+    // unhandled rejection here surfaces as a Next.js Runtime NotAllowedError.
+    let ok = false;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(detailText);
+        ok = true;
+      }
+    } catch {
+      // fall through to legacy path
+    }
+    if (!ok) {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = detailText;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch {
+        ok = false;
+      }
+    }
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   }
 
   return (
