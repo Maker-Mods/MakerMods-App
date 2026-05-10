@@ -16,5 +16,9 @@ huggingface_hub>=0.20.0
 # Direct servo motor diagnostics (debug page)
 feetech-servo-sdk>=1.0.0
 
+# Serial port enumeration (Windows COM port detection in port_scanner;
+# transitively pulled by feetech-servo-sdk on POSIX, pinned here for clarity)
+pyserial>=3.5
+
 # Qualia Studios SDK (cloud-based policy training)
 qualia-sdk

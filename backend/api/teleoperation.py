@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import uuid
 
 from fastapi import APIRouter, HTTPException
 
@@ -88,24 +89,30 @@ async def start_teleoperation(request: TeleoperationRequest):
                     status_code=400, detail="Single arm mode requires both follower and leader ports"
                 )
 
+        # Pre-allocate process_id so the port lock can be tagged with it
+        # atomically — otherwise a fast-fail subprocess can race the log task's
+        # release-on-exit ahead of register_process and strand the lease.
+        process_id = str(uuid.uuid4())
+
         # Acquire port locks
         ports = _extract_ports(config)
         try:
-            await port_lock_manager.acquire(ports, owner="teleoperation", mode="subprocess")
+            await port_lock_manager.acquire(
+                ports, owner="teleoperation", mode="subprocess", process_id=process_id,
+            )
         except PortInUseError as e:
             raise HTTPException(status_code=409, detail={"message": str(e), "owner": e.owner, "port": e.port})
 
         command = build_teleoperation_command(config, display_data=True)
-        process_id = await process_manager.start_process(
-            command, "teleoperation", env={"RERUN": "off"}
+        await process_manager.start_process(
+            command, "teleoperation", env={"RERUN": "off"}, process_id=process_id,
         )
-
-        # Register process→ports mapping for release on stop
-        await port_lock_manager.register_process(process_id, ports)
 
         return TeleoperationResponse(process_id=process_id, message="Teleoperation started successfully")
 
     except HTTPException:
+        if ports:
+            await port_lock_manager.release(ports)
         raise
     except Exception as e:
         if ports:

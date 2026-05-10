@@ -3,6 +3,7 @@
 import asyncio
 import platform
 import subprocess
+import uuid
 from pathlib import Path
 from typing import List, Optional
 
@@ -129,9 +130,14 @@ async def start_calibration(request: CalibrationStartRequest):
     """Start calibration process for a device."""
     from backend.services.port_lock_manager import PortInUseError, port_lock_manager
 
+    # Pre-allocate process_id so the port lock can be tagged with it atomically —
+    # otherwise a fast-fail subprocess can race the log task's release-on-exit
+    # ahead of register_process and strand the lease.
+    process_id = str(uuid.uuid4())
+
     try:
         await port_lock_manager.acquire(
-            [request.port], owner="calibration", mode="subprocess",
+            [request.port], owner="calibration", mode="subprocess", process_id=process_id,
         )
     except PortInUseError as e:
         raise HTTPException(status_code=409, detail={"message": str(e), "owner": e.owner, "port": e.port})
@@ -141,10 +147,7 @@ async def start_calibration(request: CalibrationStartRequest):
             request.device_type, request.device_id, request.robot_type, request.port
         )
 
-        process_id = await process_manager.start_process(command, "calibration")
-
-        # Register process→port mapping for release on stop
-        await port_lock_manager.register_process(process_id, [request.port])
+        await process_manager.start_process(command, "calibration", process_id=process_id)
 
         return CalibrationStartResponse(
             process_id=process_id, message=f"Calibration started for {request.device_id}"
@@ -207,21 +210,24 @@ async def start_auto_calibration(request: AutoCalibrationStartRequest):
     """
     from backend.services.port_lock_manager import PortInUseError, port_lock_manager
 
+    # Pre-allocate process_id so the port lock can be tagged with it atomically —
+    # otherwise a fast-fail subprocess can race the log task's release-on-exit
+    # ahead of register_process and strand the lease.
+    process_id = str(uuid.uuid4())
+
     try:
         await port_lock_manager.acquire(
-            [request.port], owner="auto_calibration", mode="subprocess",
+            [request.port], owner="auto_calibration", mode="subprocess", process_id=process_id,
         )
     except PortInUseError as e:
         raise HTTPException(status_code=409, detail={"message": str(e), "owner": e.owner, "port": e.port})
 
     try:
-        process_id = await auto_cal_service.start(
+        await auto_cal_service.start(
             port=request.port,
             device_id=request.device_id,
+            process_id=process_id,
         )
-
-        # Register process→port mapping for release on stop
-        await port_lock_manager.register_process(process_id, [request.port])
 
         return AutoCalibrationStartResponse(
             process_id=process_id,

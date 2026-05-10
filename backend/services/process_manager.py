@@ -45,7 +45,11 @@ class ProcessManager:
         self._lock = asyncio.Lock()
 
     async def start_process(
-        self, command: list[str], process_type: str, env: Optional[Dict[str, str]] = None
+        self,
+        command: list[str],
+        process_type: str,
+        env: Optional[Dict[str, str]] = None,
+        process_id: Optional[str] = None,
     ) -> str:
         """Start a subprocess.
 
@@ -53,17 +57,26 @@ class ProcessManager:
             command: Command to execute as list of strings.
             process_type: Process type (teleoperation, recording, calibration).
             env: Optional environment variables.
+            process_id: Pre-generated process ID. Callers that need to acquire
+                a port lock atomically with the subprocess (so the log task's
+                release-on-exit can always find the lease) should generate this
+                themselves and pass it in. Falls back to a fresh uuid otherwise.
 
         Returns:
             Process ID for tracking.
         """
-        process_id = str(uuid.uuid4())
+        if process_id is None:
+            process_id = str(uuid.uuid4())
 
         # Build environment: inherit parent env, force unbuffered Python output
         # so that subprocess print() calls flush immediately to the pipe
         # (otherwise Python uses block buffering when stdout is not a TTY).
+        # Also force UTF-8 stdio so subprocesses can print Unicode (e.g. "≈")
+        # on Windows, where the default cp1252 charmap codec crashes on it.
         proc_env = os.environ.copy()
         proc_env["PYTHONUNBUFFERED"] = "1"
+        proc_env["PYTHONIOENCODING"] = "utf-8"
+        proc_env["PYTHONUTF8"] = "1"
         if env:
             proc_env.update(env)
 

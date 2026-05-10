@@ -222,7 +222,7 @@ export const INITIAL_INFERENCE_CONFIG: InferenceConfig = {
   task: "",
   numEpisodes: 10,
   episodeTimeS: 50,
-  displayData: true,
+  displayData: false,
   modelType: "act",
 };
 
@@ -232,7 +232,7 @@ export const INITIAL_RECORDING_CONFIG: RecordingConfig = {
   numEpisodes: 10,
   episodeTimeS: 60,
   resetTimeS: 10,
-  displayData: true,
+  displayData: false,
   cameraFps: 30,
   cameraWidth: 640,
   cameraHeight: 480,

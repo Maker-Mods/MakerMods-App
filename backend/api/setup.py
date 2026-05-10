@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import multiprocessing as mp
+import platform
 import threading
 import time
 import traceback as tb
@@ -61,7 +62,7 @@ async def list_cameras(exclude_builtin: bool = False):
         # Stop any active MJPEG streams first — the scan opens cv2.VideoCapture
         # for each index, which conflicts with streams in the same process.
         await asyncio.to_thread(_stop_all_streams)
-        return await asyncio.to_thread(camera_scanner.list_cameras, exclude_builtin)
+        return await asyncio.to_thread(camera_scanner.list_cameras, exclude_builtin=exclude_builtin)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list cameras: {e}")
 
@@ -107,8 +108,10 @@ def _wiggle_gripper_sync(port: str) -> None:
         port=port,
         motors={"gripper": Motor(6, "sts3215", MotorNormMode.RANGE_0_100)},
     )
+    connected = False
     try:
         bus.connect()
+        connected = True
 
         # Read current raw position (sync_read returns a dict)
         positions = bus.sync_read("Present_Position", "gripper", normalize=False)
@@ -131,7 +134,8 @@ def _wiggle_gripper_sync(port: str) -> None:
         bus.write("Goal_Position", "gripper", current, normalize=False)
         time.sleep(0.3)
     finally:
-        bus.disconnect()
+        if connected:
+            bus.disconnect()
 
 
 @router.post("/wiggle")
@@ -184,34 +188,44 @@ async def wiggle_gripper(request: WiggleRequest):
 def _camera_worker(index: int, queue: mp.Queue, stop_event: mp.Event) -> None:
     """Capture frames in a separate process to avoid macOS AVFoundation cache."""
     import cv2
+    import platform
     import time
 
-    cap = cv2.VideoCapture(index)
+    # Match the rest of the stack: DSHOW on Windows so virtual webcam apps
+    # (phone-as-webcam, OBS, etc.) deliver decodable frames; OS default elsewhere.
+    backend = cv2.CAP_DSHOW if platform.system() == "Windows" else cv2.CAP_ANY
+    cap = cv2.VideoCapture(index, backend)
     if not cap.isOpened():
         # Camera unavailable (e.g. held by teleoperation subprocess) — exit cleanly
+        cap.release()
         return
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    while not stop_event.is_set():
-        ret, frame = cap.read()
-        if ret:
-            _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-            data = jpeg.tobytes()
-            # Keep only the latest frame
-            while not queue.empty():
+    # cap.release() must always run on Windows DSHOW: TerminateProcess from a
+    # parent kill skips it and leaves the camera's COM handle stuck for seconds,
+    # which then breaks the next subprocess that tries to open the same index.
+    try:
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        while not stop_event.is_set():
+            ret, frame = cap.read()
+            if ret:
+                _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                data = jpeg.tobytes()
+                # Keep only the latest frame
+                while not queue.empty():
+                    try:
+                        queue.get_nowait()
+                    except Exception:
+                        break
                 try:
-                    queue.get_nowait()
+                    queue.put_nowait(data)
                 except Exception:
-                    break
-            try:
-                queue.put_nowait(data)
-            except Exception:
-                pass
-        else:
-            # Camera read failed — exit
-            break
-        time.sleep(1 / 15)
-    cap.release()
+                    pass
+            else:
+                # Camera read failed — exit
+                break
+            time.sleep(1 / 15)
+    finally:
+        cap.release()
 
 
 class _CameraStream:
@@ -267,9 +281,13 @@ class _CameraStream:
         if self._stop_event is not None:
             self._stop_event.set()
         if self._process is not None:
-            # Give the process a brief moment to exit cleanly, then kill it.
-            # Use a short timeout (0.5s) to avoid blocking threads/event loop.
-            self._process.join(timeout=0.5)
+            # Wait long enough for the worker to exit its loop and run
+            # cap.release() — TerminateProcess (from kill) skips that and
+            # leaves the DSHOW camera handle stuck for seconds. The worker
+            # polls stop_event every ~67ms, so 1s is ~15 iterations — enough
+            # for the common case while keeping _stop_all_streams() bounded
+            # when several stale streams need teardown back-to-back.
+            self._process.join(timeout=1.0)
             if self._process.is_alive():
                 self._process.kill()
                 self._process.join(timeout=1)

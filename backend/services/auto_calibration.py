@@ -43,18 +43,24 @@ class AutoCalibrationService:
             "--robot-id", device_id,
         ]
 
-    async def start(self, port: str, device_id: str) -> str:
+    async def start(
+        self, port: str, device_id: str, process_id: str | None = None
+    ) -> str:
         """Start auto-calibration as a subprocess.
 
         Args:
             port: Serial port path
             device_id: Robot ID for the saved calibration file
+            process_id: Optional pre-generated process_id so callers can acquire
+                the port lock atomically with subprocess launch.
 
         Returns:
             Process ID for tracking.
         """
         command = self.build_command(port, device_id)
-        process_id = await process_manager.start_process(command, "auto_calibration")
+        process_id = await process_manager.start_process(
+            command, "auto_calibration", process_id=process_id,
+        )
         return process_id
 
     async def stop(self, process_id: str) -> bool:

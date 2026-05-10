@@ -765,21 +765,34 @@ export function TrainingStep() {
                 );
                 const isComplete = i < currentIdx;
                 const isCurrent = phase === jobPhase;
-                const isPending = i > currentIdx;
+                const isTerminalCurrent =
+                  isCurrent &&
+                  (jobStatus === "completed" ||
+                    jobStatus === "failed" ||
+                    jobStatus === "cancelled");
+                const isDone = isComplete || (isTerminalCurrent && jobStatus === "completed");
 
                 return (
                   <div
                     key={phase}
                     className={`flex items-center gap-2 rounded px-2 py-1 text-sm ${
-                      isCurrent
+                      isTerminalCurrent && jobStatus === "failed"
+                        ? "text-red-600 font-medium"
+                        : isTerminalCurrent && jobStatus === "cancelled"
+                        ? "text-muted-foreground font-medium"
+                        : isCurrent
                         ? "bg-primary/10 font-medium"
-                        : isComplete
+                        : isDone
                         ? "text-green-600"
                         : "text-muted-foreground"
                     }`}
                   >
-                    {isComplete ? (
+                    {isDone ? (
                       <CheckCircle2 className="h-3.5 w-3.5 text-green-600 flex-shrink-0" />
+                    ) : isTerminalCurrent && jobStatus === "failed" ? (
+                      <XCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0" />
+                    ) : isTerminalCurrent && jobStatus === "cancelled" ? (
+                      <XCircle className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
                     ) : isCurrent ? (
                       <Loader2 className="h-3.5 w-3.5 animate-spin text-primary flex-shrink-0" />
                     ) : (
