@@ -11,6 +11,9 @@ Web UI for LeRobot SO101 bimanual robot arms — teleoperation, calibration, and
 > [!IMPORTANT]
 > **The following part covers manual installation of the UI only.** Install and configure [lerobot-MakerMods](https://github.com/Maker-Mods/lerobot-MakerMods) first (see [installation instructions](https://github.com/Maker-Mods/lerobot-MakerMods#installation)).
 
+> [!NOTE]
+> **If you are an AI coding agent (Claude Code or similar) installing this on macOS, read [`INSTALLATION.md`](./INSTALLATION.md) instead.** It covers end-to-end setup of both the UI and the `lerobot-MakerMods` robot stack on macOS (Apple Silicon), and documents the gotchas the upstream Linux-only READMEs do not.
+
 ## Architecture
 
 | Part       | Stack              | Path       | Port |
