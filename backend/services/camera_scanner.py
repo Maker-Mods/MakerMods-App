@@ -4,12 +4,25 @@ import json
 import platform
 import shutil
 import subprocess
+import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 
 from backend.models.setup import CameraInfo, CameraPreview
+
+
+def _cv2_backend() -> int:
+    """OpenCV capture backend hint per platform.
+
+    On Windows, MSMF (the OS default) mis-decodes some virtual webcam streams
+    (e.g. phone-as-webcam apps deliver YUV variants that MSMF reads as garbage).
+    DirectShow handles those correctly.
+    """
+    if platform.system() == "Windows":
+        return cv2.CAP_DSHOW
+    return cv2.CAP_ANY
 
 
 class CameraScannerService:
@@ -114,7 +127,7 @@ class CameraScannerService:
         cameras = []
 
         for index in range(scan_limit):
-            cap = cv2.VideoCapture(index)
+            cap = cv2.VideoCapture(index, _cv2_backend())
 
             if cap.isOpened():
                 cap.release()
@@ -128,6 +141,44 @@ class CameraScannerService:
                 )
 
         return cameras
+
+    def verify_indices(
+        self, indices: List[int], retries: int = 3, delay_s: float = 0.7
+    ) -> Optional[Tuple[int, str]]:
+        """Verify that each camera index can be opened.
+
+        On Windows DSHOW, killing an MJPEG worker subprocess can leave the
+        camera's COM handle stuck for ~1-2 seconds. We retry to ride that out
+        before giving up.
+
+        Args:
+            indices: Camera indices to check.
+            retries: Max attempts per index (Windows). Non-Windows fails fast.
+            delay_s: Sleep between retries on Windows.
+
+        Returns:
+            None if all indices opened successfully. Otherwise (index, reason)
+            for the first index that could not be opened.
+        """
+        is_windows = platform.system() == "Windows"
+        attempts = retries if is_windows else 1
+
+        for index in indices:
+            opened = False
+            for attempt in range(attempts):
+                cap = cv2.VideoCapture(index, _cv2_backend())
+                if cap.isOpened():
+                    cap.release()
+                    opened = True
+                    break
+                cap.release()
+                if attempt < attempts - 1:
+                    time.sleep(delay_s)
+
+            if not opened:
+                return (index, "Camera could not be opened")
+
+        return None
 
     def capture_preview(
         self, camera_indices: Optional[List[int]] = None, record_time_s: float = 2.0
@@ -156,7 +207,7 @@ class CameraScannerService:
         previews = {}
 
         for index in camera_indices:
-            cap = cv2.VideoCapture(index)
+            cap = cv2.VideoCapture(index, _cv2_backend())
 
             if not cap.isOpened():
                 continue

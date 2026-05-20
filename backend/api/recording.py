@@ -5,18 +5,21 @@ import json
 import shutil
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
 from backend.models.recording import RecordingRequest, RecordingResponse
 from backend.models.system import ProcessStatus
+from backend.services.camera_scanner import CameraScannerService
 from backend.services.config_manager import ConfigManager
 from backend.services.port_lock_manager import PortInUseError, port_lock_manager
 from backend.services.process_manager import process_manager
 
 router = APIRouter()
 config_manager = ConfigManager()
+camera_scanner = CameraScannerService()
 
 
 def build_recording_command(config, request: RecordingRequest) -> list[str]:
@@ -50,6 +53,7 @@ def build_recording_command(config, request: RecordingRequest) -> list[str]:
             f"--dataset.num_episodes={request.num_episodes}",
             f"--dataset.episode_time_s={request.episode_time_s}",
             f"--dataset.reset_time_s={request.reset_time_s}",
+            f"--dataset.video_encoding_batch_size={request.num_episodes}",
             f"--display_data={str(request.display_data).lower()}",
         ]
     else:
@@ -77,8 +81,48 @@ def build_recording_command(config, request: RecordingRequest) -> list[str]:
             f"--dataset.num_episodes={request.num_episodes}",
             f"--dataset.episode_time_s={request.episode_time_s}",
             f"--dataset.reset_time_s={request.reset_time_s}",
+            f"--dataset.video_encoding_batch_size={request.num_episodes}",
             f"--display_data={str(request.display_data).lower()}",
         ]
+
+
+def _configured_cameras(config) -> list:
+    """Return the list of configured camera entries for the active mode."""
+    if config.mode == "bimanual":
+        return list(config.bimanual.cameras)
+    return list(config.single_arm.cameras)
+
+
+async def _preflight_cameras(config) -> None:
+    """Stop MJPEG previews and verify each configured camera can be opened.
+
+    Raises HTTPException(503) naming the offending camera if verification fails.
+    """
+    from backend.api.setup import _stop_all_streams
+
+    await asyncio.to_thread(_stop_all_streams)
+
+    cameras = _configured_cameras(config)
+    indices = [cam.index for cam in cameras]
+    if not indices:
+        return
+
+    failure = await asyncio.to_thread(camera_scanner.verify_indices, indices)
+    if failure is None:
+        return
+
+    failing_index, _reason = failure
+    cam_name = next(
+        (cam.name for cam in cameras if cam.index == failing_index),
+        f"index {failing_index}",
+    )
+    raise HTTPException(
+        status_code=503,
+        detail=(
+            f"Camera '{cam_name}' (index {failing_index}) is not accessible. "
+            "Try unplugging and replugging it, or wait a few seconds and try again."
+        ),
+    )
 
 
 def _extract_recording_ports(config) -> list[str]:
@@ -127,19 +171,30 @@ async def start_recording(request: RecordingRequest):
             if not config.single_arm.cameras:
                 raise HTTPException(status_code=400, detail="No cameras configured for recording")
 
+        # Pre-allocate process_id so the port lock can be tagged with it
+        # atomically — otherwise a fast-fail subprocess can race the log task's
+        # release-on-exit ahead of register_process and strand the lease.
+        process_id = str(uuid.uuid4())
+
         # Acquire port locks
         ports = _extract_recording_ports(config)
         try:
-            await port_lock_manager.acquire(ports, owner="recording", mode="subprocess")
+            await port_lock_manager.acquire(
+                ports, owner="recording", mode="subprocess", process_id=process_id,
+            )
         except PortInUseError as e:
             raise HTTPException(status_code=409, detail={"message": str(e), "owner": e.owner, "port": e.port})
 
+        # Verify cameras are openable before launching the subprocess. Mirrors
+        # the inference path; rides out the Windows DSHOW handle-stuck race
+        # left by killed MJPEG preview workers from earlier in the session.
+        await _preflight_cameras(config)
+
         # Build and start command
         command = build_recording_command(config, request)
-        process_id = await process_manager.start_process(command, "recording")
-
-        # Register process→ports mapping for release on stop
-        await port_lock_manager.register_process(process_id, ports)
+        await process_manager.start_process(
+            command, "recording", env={"RERUN": "off"}, process_id=process_id,
+        )
 
         # Update last recording config
         config.last_recording.repo_id = request.repo_id
@@ -151,6 +206,10 @@ async def start_recording(request: RecordingRequest):
         return RecordingResponse(process_id=process_id, message="Recording started successfully")
 
     except HTTPException:
+        # Pre-flight or validation failure after port locks were acquired —
+        # don't leak the lock to a process that never started.
+        if ports:
+            await port_lock_manager.release(ports)
         raise
     except Exception as e:
         if ports:

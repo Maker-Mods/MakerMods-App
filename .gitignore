@@ -13,6 +13,10 @@ out/
 # Config (user-specific)
 webui_config.json
 
+# Standalone scripts runtime artifacts
+scripts/home_pose.json
+scripts/.cam_preview/
+
 # OS
 .DS_Store
 
@@ -34,4 +38,4 @@ PROGRESS.md
 CLAUDE.md
 
 # Playwright MCP session artifacts (screenshots, snapshots)
-.playwright-mcp/
+.playwright-mcp/.claude/
