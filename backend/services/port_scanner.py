@@ -29,11 +29,21 @@ class PortScannerService:
     def list_ports(self) -> List[PortInfo]:
         """List available serial ports (Feetech motor controllers / SO101 leader/follower).
 
-        On macOS returns /dev/cu.usbmodem* and /dev/cu.usbserial-*; on Linux returns /dev/ttyUSB* and /dev/ttyACM*.
-
-        Returns:
-            List of PortInfo objects.
+        Windows: enumerate COM* via pyserial (returns description + hwid for serial-number ID).
+        macOS:   /dev/cu.usbmodem* and /dev/cu.usbserial-*
+        Linux:   /dev/ttyUSB* and /dev/ttyACM*
         """
+        if platform.system() == "Windows":
+            from serial.tools import list_ports as _serial_list_ports
+            return [
+                PortInfo(
+                    port=p.device,
+                    description=p.description or "Serial Port",
+                    hwid=p.hwid,
+                )
+                for p in _serial_list_ports.comports()
+            ]
+
         dev = Path("/dev")
         ports: List[str] = []
         for pattern in _get_serial_port_globs():

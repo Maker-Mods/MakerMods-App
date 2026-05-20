@@ -61,7 +61,12 @@ async def list_cameras(exclude_builtin: bool = False):
         # Stop any active MJPEG streams first — the scan opens cv2.VideoCapture
         # for each index, which conflicts with streams in the same process.
         await asyncio.to_thread(_stop_all_streams)
-        return await asyncio.to_thread(camera_scanner.list_cameras, exclude_builtin)
+        # Pass as kwarg — passing positional makes exclude_builtin become
+        # max_cameras (its first positional param), which silently degrades to
+        # 0 on Windows where system_profiler doesn't apply, returning [].
+        return await asyncio.to_thread(
+            lambda: camera_scanner.list_cameras(exclude_builtin=exclude_builtin)
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to list cameras: {e}")
 
