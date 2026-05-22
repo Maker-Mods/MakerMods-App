@@ -26,7 +26,10 @@ class CameraScannerService:
             output_dir = repo_root / "outputs" / "camera_previews"
 
         self.output_dir = output_dir
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.output_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+            pass
 
     @staticmethod
     def _is_external_camera(camera: dict) -> bool:

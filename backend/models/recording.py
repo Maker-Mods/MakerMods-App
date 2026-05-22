@@ -23,6 +23,12 @@ class RecordingResponse(BaseModel):
     message: str = Field(..., description="Status message")
 
 
+class RecordingActionRequest(BaseModel):
+    """Request to send a control action to a running recording process."""
+
+    action: str = Field(..., description="Control action: rerecord, save, or stop")
+
+
 class HFRepoInfo(BaseModel):
     """HuggingFace repository information."""
 

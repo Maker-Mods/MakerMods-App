@@ -8,8 +8,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from backend.models.recording import RecordingRequest, RecordingResponse
-from backend.models.system import ProcessStatus
+from backend.models.recording import RecordingActionRequest, RecordingRequest, RecordingResponse
+from backend.models.system import ProcessState, ProcessStatus
 from backend.services.config_manager import ConfigManager
 from backend.services.process_manager import process_manager
 
@@ -145,6 +145,42 @@ async def stop_recording(process_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to stop recording: {e}")
+
+
+_ALLOWED_ACTIONS = {"rerecord", "save", "stop"}
+
+
+@router.post("/action/{process_id}")
+async def send_recording_action(process_id: str, request: RecordingActionRequest):
+    """Send a keyboard-equivalent control action to a running recording.
+
+    Actions map to lerobot record-loop events:
+      - "rerecord": discard current episode, reset, re-record (left arrow)
+      - "save":     end current phase early and save the episode (right arrow)
+      - "stop":     stop the whole recording session (escape)
+    """
+    if request.action not in _ALLOWED_ACTIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid action '{request.action}'. Allowed: {sorted(_ALLOWED_ACTIONS)}",
+        )
+
+    status = await process_manager.get_status(process_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail=f"Process {process_id} not found")
+    if status.state != ProcessState.RUNNING:
+        raise HTTPException(status_code=409, detail=f"Process {process_id} is not running")
+
+    # Note: if the process exits between the status check above and this
+    # write, send_stdin returns False and we surface a 500. This is a rare
+    # race; the alternative (re-querying status) is not worth the complexity.
+    ok = await process_manager.send_stdin(process_id, request.action)
+    if not ok:
+        raise HTTPException(
+            status_code=500, detail="Failed to deliver action to recording process"
+        )
+
+    return {"message": f"Action '{request.action}' sent"}
 
 
 @router.get("/status/{process_id}", response_model=ProcessStatus)
