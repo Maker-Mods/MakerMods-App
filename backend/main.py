@@ -32,10 +32,13 @@ config_manager = ConfigManager()
 # Mount static directory for camera previews
 repo_root = Path(__file__).parent.parent
 outputs_dir = repo_root / "outputs"
-if not outputs_dir.exists():
+try:
     outputs_dir.mkdir(parents=True, exist_ok=True)
+except PermissionError:
+    pass
 
-app.mount("/outputs", StaticFiles(directory=str(outputs_dir)), name="outputs")
+if outputs_dir.exists():
+    app.mount("/outputs", StaticFiles(directory=str(outputs_dir)), name="outputs")
 
 
 # Health check endpoint
