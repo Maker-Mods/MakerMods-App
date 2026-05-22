@@ -78,11 +78,12 @@ class ProcessManager:
             env=proc_env,
         )
 
-        # Send a few newlines to satisfy any interactive prompts, then close stdin
+        # Send a few newlines to satisfy any interactive startup prompts.
+        # Keep stdin OPEN afterwards so control commands can be delivered
+        # during the process lifetime (see send_stdin).
         if process.stdin:
             process.stdin.write(b"\n\n\n")
             await process.stdin.drain()
-            process.stdin.close()
 
         process_info = ProcessInfo(process, process_type)
 
@@ -163,6 +164,13 @@ class ProcessManager:
             process_info.stopped_at = datetime.now()
             return True
 
+        # Close stdin so the subprocess's stdin reader thread sees EOF.
+        if process_info.process.stdin is not None:
+            try:
+                process_info.process.stdin.close()
+            except Exception:
+                pass
+
         # Send SIGTERM
         try:
             process_info.process.send_signal(signal.SIGTERM)
@@ -203,6 +211,33 @@ class ProcessManager:
             if not process_info:
                 return None
             return self._build_status(process_id, process_info)
+
+    async def send_stdin(self, process_id: str, text: str) -> bool:
+        """Write a single command line to a running process's stdin.
+
+        Args:
+            process_id: Process identifier.
+            text: Command text; a trailing newline is appended.
+
+        Returns:
+            True if written successfully; False if the process is missing,
+            has already exited, or its stdin is unavailable/broken.
+        """
+        async with self._lock:
+            process_info = self.processes.get(process_id)
+
+        if not process_info:
+            return False
+        process = process_info.process
+        if process.returncode is not None or process.stdin is None:
+            return False
+
+        try:
+            process.stdin.write((text + "\n").encode("utf-8"))
+            await process.stdin.drain()
+            return True
+        except (BrokenPipeError, ConnectionResetError, RuntimeError):
+            return False
 
     def _build_status(self, process_id: str, process_info: ProcessInfo) -> ProcessStatus:
         """Build a ProcessStatus from a ProcessInfo. Does not acquire the lock."""

@@ -18,3 +18,6 @@ feetech-servo-sdk>=1.0.0
 
 # Qualia Studios SDK (cloud-based policy training)
 qualia-sdk
+
+pytest>=8.0
+httpx>=0.27
