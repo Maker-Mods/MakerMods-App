@@ -145,13 +145,13 @@ function RecordingStatusCard({
         currentEpisode !== null
           ? `Recording episode ${currentEpisode} / ${numEpisodes}`
           : "Recording…",
-      subtitle: "Perform the task now.",
+      subtitle: "Perform the task now.   ← re-record episode    → save & continue",
       accent: "border-red-200 dark:border-red-900",
     },
     resetting: {
       icon: <RefreshCw className="h-5 w-5 text-amber-500 shrink-0" />,
       title: "Reset the environment",
-      subtitle: "Prepare the scene for the next episode.",
+      subtitle: "Prepare the scene for the next episode.   → skip reset",
       accent: "border-amber-200 dark:border-amber-900",
     },
     encoding: {
@@ -265,6 +265,36 @@ export function RecordStep() {
     }
     return stopPolling;
   }, [state.recordProcessId, startPolling, stopPolling]);
+
+  // Keyboard controls during recording: ArrowLeft re-records the current
+  // episode, ArrowRight saves it early. Mirrors lerobot's arrow-key
+  // shortcuts; commands are delivered to the recording subprocess stdin.
+  useEffect(() => {
+    const processId = state.recordProcessId;
+    if (!processId) return;
+    if (phase !== "recording" && phase !== "resetting") return;
+
+    let lastSent = 0;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      if (e.repeat) return;
+      const el = document.activeElement;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
+
+      e.preventDefault();
+      const now = Date.now();
+      if (now - lastSent < 300) return; // lightweight throttle
+      lastSent = now;
+
+      const action = e.key === "ArrowLeft" ? "rerecord" : "save";
+      services
+        .sendRecordingAction(processId, action)
+        .catch((err) => console.warn("Failed to send recording action:", err));
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [state.recordProcessId, phase]);
 
   // Check if repo ID was used before
   useEffect(() => {
