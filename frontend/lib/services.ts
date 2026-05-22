@@ -151,6 +151,18 @@ export const services = {
     await fetchAPI(`/api/recording/stop/${processId}`, { method: "POST" });
   },
 
+  /** Send a control action (rerecord / save / stop) to a running recording. */
+  sendRecordingAction: async (
+    processId: string,
+    action: "rerecord" | "save" | "stop"
+  ): Promise<void> => {
+    await fetchAPI(`/api/recording/action/${processId}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action }),
+    });
+  },
+
   startCalibration: async (
     deviceType: string,
     deviceId: string,
