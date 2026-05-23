@@ -272,4 +272,83 @@ export const api = {
         { method: "POST" }
       ),
   },
+
+  qc: {
+    getSettings: () => fetchAPI<QcSettings>("/api/qc/settings"),
+    patchSettings: (patch: QcSettingsPatch) =>
+      fetchAPI<QcSettings>("/api/qc/settings", {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      }),
+    setKey: (role: QcProviderRole, apiKey: string) =>
+      fetchAPI<QcSettings>("/api/qc/providers/key", {
+        method: "POST",
+        body: JSON.stringify({ role, api_key: apiKey }),
+      }),
+    clearKey: (role: QcProviderRole) =>
+      fetchAPI<QcSettings>(`/api/qc/providers/key/${role}`, {
+        method: "DELETE",
+      }),
+    testProvider: (role: QcProviderRole) =>
+      fetchAPI<QcProviderTestResponse>("/api/qc/providers/test", {
+        method: "POST",
+        body: JSON.stringify({ role }),
+      }),
+    costEstimate: () =>
+      fetchAPI<QcCostEstimate>("/api/qc/cost-estimate"),
+    presets: () => fetchAPI<QcProviderPreset[]>("/api/qc/presets"),
+    diagnostics: () =>
+      fetchAPI<{ secret_backend: string }>("/api/qc/diagnostics"),
+  },
 };
+
+// ---- QC types (mirror backend/models/qc.py) ---------------------------------
+
+export type QcProviderName = "qwen" | "openai" | "anthropic" | "custom";
+export type QcProviderRole = "vlm" | "llm";
+export type QcTrigger = "after_session" | "manual";
+
+export interface QcProviderConfig {
+  provider: QcProviderName;
+  model: string;
+  base_url: string | null;
+  api_key_ref: string | null;
+  last_verified_at: string | null;
+}
+
+export interface QcSettings {
+  enabled: boolean;
+  trigger: QcTrigger;
+  privacy: {
+    upload_frames: boolean;
+    thumbnail_ttl_hours: number;
+    redact_faces: boolean;
+  };
+  providers: { vlm: QcProviderConfig; llm: QcProviderConfig };
+  budget: { max_usd_per_session: number; warn_above_usd: number };
+  first_run_dismissed: boolean;
+  not_now_until: string | null;
+}
+
+export type QcSettingsPatch = Partial<QcSettings>;
+
+export interface QcProviderTestResponse {
+  ok: boolean;
+  latency_ms?: number;
+  model_echo?: string;
+  est_cost_usd?: number;
+  error?: string;
+}
+
+export interface QcCostEstimate {
+  per_episode_usd: number;
+  assumptions: Record<string, number>;
+}
+
+export interface QcProviderPreset {
+  provider: QcProviderName;
+  label: string;
+  base_url: string;
+  vlm_models: string[];
+  llm_models: string[];
+}

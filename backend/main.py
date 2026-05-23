@@ -71,6 +71,7 @@ from backend.api import (
     debug,
     huggingface,
     inference,
+    qc,
     recording,
     setup,
     system,
@@ -89,6 +90,7 @@ app.include_router(huggingface.router, prefix="/api/huggingface", tags=["hugging
 app.include_router(system.router, prefix="/api/system", tags=["system"])
 app.include_router(debug.router, prefix="/api/debug", tags=["debug"])
 app.include_router(training.router, prefix="/api/training", tags=["training"])
+app.include_router(qc.router, prefix="/api/qc", tags=["qc"])
 
 # WebSocket endpoints
 from backend.websockets.logs import router as websocket_router
