@@ -4,6 +4,7 @@ import asyncio
 import os
 import re
 import signal
+import sys
 import uuid
 from collections import deque
 from datetime import datetime
@@ -64,6 +65,14 @@ class ProcessManager:
         # (otherwise Python uses block buffering when stdout is not a TTY).
         proc_env = os.environ.copy()
         proc_env["PYTHONUNBUFFERED"] = "1"
+        # Ensure subprocess can find lerobot-* CLIs installed alongside our
+        # Python interpreter. When the backend is launched by absolute path
+        # (e.g. /opt/anaconda3/envs/lerobot/bin/python) without `conda activate`,
+        # the env's bin/ is NOT on PATH and bare-name execs fail with [Errno 2].
+        # Confirmed pattern: conda/conda#6810, Python subprocess+conda discussions.
+        python_bin_dir = os.path.dirname(sys.executable)
+        if python_bin_dir and python_bin_dir not in proc_env.get("PATH", "").split(os.pathsep):
+            proc_env["PATH"] = python_bin_dir + os.pathsep + proc_env.get("PATH", "")
         if env:
             proc_env.update(env)
 
